@@ -65,6 +65,60 @@ api.pythonoku.edu.kg  -> YOUR_EC2_PUBLIC_IPV4
 
 The exact Vercel DNS record depends on how the domain is connected in Vercel. Use the DNS values Vercel shows in the Domains screen.
 
+## If `/login` returns 404 from AWS
+
+If Nginx logs contain a line like this:
+
+```text
+open() "/etc/nginx/html/login" failed
+```
+
+then the browser is reaching the backend server for a frontend route. In the split setup this means DNS is still wrong or the frontend has not been attached in Vercel yet.
+
+Fix the DNS and server environment:
+
+```text
+pythonoku.edu.kg      -> Vercel
+www.pythonoku.edu.kg  -> Vercel
+api.pythonoku.edu.kg  -> EC2 public IPv4
+```
+
+On EC2, update `mysite/.env` so the backend is an API service:
+
+```env
+ALLOWED_HOSTS=api.pythonoku.edu.kg,YOUR_EC2_PUBLIC_IPV4
+CSRF_TRUSTED_ORIGINS=https://api.pythonoku.edu.kg,https://pythonoku.edu.kg,https://www.pythonoku.edu.kg
+CORS_ALLOW_ALL_ORIGINS=False
+CORS_ALLOWED_ORIGINS=https://pythonoku.edu.kg,https://www.pythonoku.edu.kg
+```
+
+Then restart:
+
+```bash
+cd ~/PythonOku/mysite
+docker compose up -d --build
+docker compose logs -f nginx
+```
+
+Check:
+
+```bash
+curl -I http://127.0.0.1/api/
+curl -I http://YOUR_EC2_PUBLIC_IPV4/
+```
+
+The main site `/login` should be opened on Vercel through `https://pythonoku.edu.kg/login`, not through the EC2 backend.
+
+## Secret rotation
+
+Do not paste production `.env` values into chat, GitHub, or tickets. If a secret was pasted anywhere, rotate it before continuing:
+
+- generate a new `SECRET_KEY`
+- create a new Gemini API key and disable the exposed one
+- create a new Gmail App Password and disable the exposed one
+- replace the default database password with a strong password
+- restart the backend containers after updating `.env`
+
 ## SEO checklist
 
 The frontend includes:
