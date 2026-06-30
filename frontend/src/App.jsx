@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom
 import { useEffect, useState } from 'react'
 import api from './api/axios'
 
+import PublicHome from './pages/PublicHome'
 import AuthPage from './pages/auth/AuthPage'
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage'
 
@@ -77,7 +78,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<RoleHome />} />
+        <Route path="/" element={<PublicHome />} />
+        <Route path="/app" element={<RoleHome />} />
         <Route path="/login" element={<AuthPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
 
