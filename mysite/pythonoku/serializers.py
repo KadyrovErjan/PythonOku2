@@ -147,18 +147,50 @@ class VerifyResetCodeSerializer(serializers.Serializer):
         ResetPasswordToken.objects.filter(user=user).delete()
 
 
+def clean_video_urls(value):
+    if not isinstance(value, list):
+        return []
+
+    cleaned = []
+    for item in value:
+        url = str(item or '').strip()
+        if url and url not in cleaned:
+            cleaned.append(url)
+    return cleaned
+
+
+class LessonVideoFieldsMixin:
+    def validate_video_urls(self, value):
+        return clean_video_urls(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        video_urls = attrs.get('video_urls')
+        youtube_url = str(attrs.get('youtube_url') or '').strip()
+
+        if video_urls is not None:
+            video_urls = clean_video_urls(video_urls)
+            attrs['video_urls'] = video_urls
+            attrs['youtube_url'] = video_urls[0] if video_urls else youtube_url
+        elif youtube_url and not getattr(self.instance, 'video_urls', None):
+            attrs['video_urls'] = [youtube_url]
+
+        return attrs
+
+
 # ── Course & Lesson ───────────────────────────────────────────────────────────
 
-class LessonListSerializer(serializers.ModelSerializer):
+class LessonListSerializer(LessonVideoFieldsMixin, serializers.ModelSerializer):
     content = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Lesson
         fields = ['id', 'title', 'description', 'content', 'order',
-                  'duration_minutes', 'xp_reward', 'is_published', 'youtube_url']
+                  'duration_minutes', 'xp_reward', 'is_published', 'youtube_url',
+                  'video_urls']
 
 
-class LessonDetailSerializer(serializers.ModelSerializer):
+class LessonDetailSerializer(LessonVideoFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model = Lesson
         fields = '__all__'
@@ -217,10 +249,22 @@ class UserProgressSerializer(serializers.ModelSerializer):
         fields = ['id', 'lesson', 'lesson_title', 'completed',
                   'completed_at', 'code_submitted', 'watched_seconds',
                   'video_duration_seconds', 'last_video_position',
-                  'watched_ranges', 'watch_percent']
+                  'watched_ranges', 'video_parts_progress', 'watch_percent']
         read_only_fields = ['user']
 
     def get_watch_percent(self, obj):
+        parts_progress = obj.video_parts_progress if isinstance(obj.video_parts_progress, dict) else {}
+        if parts_progress:
+            total_duration = 0
+            total_watched = 0
+            for part in parts_progress.values():
+                if not isinstance(part, dict):
+                    continue
+                total_duration += int(part.get('video_duration_seconds') or 0)
+                total_watched += int(part.get('watched_seconds') or 0)
+            if total_duration:
+                return min(100, round((total_watched / total_duration) * 100))
+
         if not obj.video_duration_seconds:
             return 0
         return min(100, round((obj.watched_seconds / obj.video_duration_seconds) * 100))

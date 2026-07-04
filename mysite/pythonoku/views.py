@@ -118,6 +118,21 @@ def _required_watch_seconds(total_seconds):
     return min(total_seconds, max(1, math.ceil(total_seconds * WATCH_REQUIRED_RATIO)))
 
 
+def _lesson_video_urls(lesson):
+    urls = []
+    raw_urls = lesson.video_urls if isinstance(lesson.video_urls, list) else []
+    for item in raw_urls:
+        url = str(item or '').strip()
+        if url and url not in urls:
+            urls.append(url)
+
+    legacy_url = str(lesson.youtube_url or '').strip()
+    if legacy_url and legacy_url not in urls:
+        urls.insert(0, legacy_url)
+
+    return urls
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 class PasswordResetThrottle(AnonRateThrottle):
@@ -960,6 +975,10 @@ class CompleteLessonView(APIView):
         client_duration_seconds = _to_int(request.data.get('video_duration_seconds'), 0)
         current_position = max(0.0, _to_float(request.data.get('current_time'), 0.0))
         ended = request.data.get('ended') is True
+        video_urls = _lesson_video_urls(lesson)
+        video_count = max(1, len(video_urls))
+        video_index = max(0, min(_to_int(request.data.get('video_index'), 0), video_count - 1))
+        video_key = str(video_index)
 
         lesson_duration_seconds = (lesson.duration_minutes or 0) * 60
         total_seconds = max(client_duration_seconds, lesson_duration_seconds, 1)
@@ -990,9 +1009,18 @@ class CompleteLessonView(APIView):
             if progress.watch_started_at is None:
                 progress.watch_started_at = now
 
-            previous_ranges = _normalise_watch_ranges(progress.watched_ranges, total_seconds)
-            if not previous_ranges and progress.watched_seconds > 0:
-                previous_ranges = _normalise_watch_ranges([[0, progress.watched_seconds]], total_seconds)
+            parts_progress = progress.video_parts_progress if isinstance(progress.video_parts_progress, dict) else {}
+            part_progress = parts_progress.get(video_key) if isinstance(parts_progress.get(video_key), dict) else {}
+
+            previous_ranges = _normalise_watch_ranges(part_progress.get('watched_ranges'), total_seconds)
+            previous_watched_seconds = _to_int(part_progress.get('watched_seconds'), 0)
+            if not previous_ranges and previous_watched_seconds > 0:
+                previous_ranges = _normalise_watch_ranges([[0, previous_watched_seconds]], total_seconds)
+
+            if not previous_ranges and video_index == 0:
+                previous_ranges = _normalise_watch_ranges(progress.watched_ranges, total_seconds)
+                if not previous_ranges and progress.watched_seconds > 0 and not parts_progress:
+                    previous_ranges = _normalise_watch_ranges([[0, progress.watched_seconds]], total_seconds)
 
             previous_seconds = _watch_ranges_duration(previous_ranges)
             last_update = progress.last_watch_update_at or progress.watch_started_at
@@ -1011,15 +1039,45 @@ class CompleteLessonView(APIView):
             accepted_seconds = _watch_ranges_duration(accepted_ranges)
             required_seconds = _required_watch_seconds(total_seconds)
             near_video_end = ended or current_position >= max(required_seconds, total_seconds - 12)
+            part_completed = accepted_seconds >= required_seconds and near_video_end
             streak_should_update = accepted_seconds > previous_seconds
 
+            parts_progress[video_key] = {
+                'watched_ranges': accepted_ranges,
+                'watched_seconds': accepted_seconds,
+                'video_duration_seconds': total_seconds,
+                'required_seconds': required_seconds,
+                'watch_percent': min(100, round((accepted_seconds / total_seconds) * 100)) if total_seconds else 0,
+                'last_video_position': min(current_position, total_seconds),
+                'completed': bool(part_completed or part_progress.get('completed')),
+                'updated_at': now.isoformat(),
+            }
+
+            completed_video_indexes = sorted(
+                int(key)
+                for key, value in parts_progress.items()
+                if str(key).isdigit() and isinstance(value, dict) and value.get('completed')
+            )
+            all_parts_completed = all(parts_progress.get(str(index), {}).get('completed') for index in range(video_count))
+            aggregate_watched_seconds = sum(
+                _to_int(value.get('watched_seconds'), 0)
+                for value in parts_progress.values()
+                if isinstance(value, dict)
+            )
+            aggregate_duration_seconds = sum(
+                _to_int(value.get('video_duration_seconds'), 0)
+                for value in parts_progress.values()
+                if isinstance(value, dict)
+            )
+
+            progress.video_parts_progress = parts_progress
             progress.watched_ranges = accepted_ranges
-            progress.watched_seconds = accepted_seconds
-            progress.video_duration_seconds = total_seconds
+            progress.watched_seconds = aggregate_watched_seconds or accepted_seconds
+            progress.video_duration_seconds = aggregate_duration_seconds or total_seconds
             progress.last_video_position = min(current_position, total_seconds)
             progress.last_watch_update_at = now
 
-            if not progress.completed and accepted_seconds >= required_seconds and near_video_end:
+            if not progress.completed and all_parts_completed:
                 progress.completed = True
                 progress.completed_at = now
 
@@ -1036,11 +1094,16 @@ class CompleteLessonView(APIView):
         if streak_should_update:
             streak, streak_updated = touch_learning_streak(request.user, reason='video_watch')
 
+        next_video_index = video_index + 1 if part_completed and video_index + 1 < video_count else None
         watch_percent = min(100, round((accepted_seconds / total_seconds) * 100)) if total_seconds else 0
         if progress.completed and xp_gained:
             message = f'+{xp_gained} XP за просмотр урока!'
         elif progress.completed:
             message = 'Урок уже выполнен'
+        elif part_completed and next_video_index is not None:
+            message = 'Часть просмотрена. Можно перейти к следующему видео.'
+        elif part_completed:
+            message = 'Видео просмотрено. Осталось завершить другие части урока.'
         else:
             message = 'Прогресс просмотра сохранён'
 
@@ -1056,6 +1119,12 @@ class CompleteLessonView(APIView):
             'watch_percent': watch_percent,
             'watched_ranges': accepted_ranges,
             'last_video_position': progress.last_video_position,
+            'video_index': video_index,
+            'video_count': video_count,
+            'part_completed': bool(parts_progress.get(video_key, {}).get('completed')),
+            'next_video_index': next_video_index,
+            'completed_video_indexes': completed_video_indexes,
+            'video_parts_progress': parts_progress,
             'streak': streak,
             'streak_updated': streak_updated,
         })

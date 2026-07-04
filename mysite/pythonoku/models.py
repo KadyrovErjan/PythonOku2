@@ -36,6 +36,7 @@ class Lesson(models.Model):
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     youtube_url = models.URLField(blank=True)      # ссылка на YouTube видео
+    video_urls = models.JSONField(default=list, blank=True)
     content = models.TextField(blank=True)          # текст урока / документация
     order = models.PositiveIntegerField(default=0)  # порядок урока
     xp_reward = models.PositiveIntegerField(default=10)
@@ -74,6 +75,7 @@ class UserProgress(models.Model):
     video_duration_seconds = models.PositiveIntegerField(default=0)
     last_video_position = models.FloatField(default=0)
     watched_ranges = models.JSONField(default=list, blank=True)
+    video_parts_progress = models.JSONField(default=dict, blank=True)
     watch_started_at = models.DateTimeField(null=True, blank=True)
     last_watch_update_at = models.DateTimeField(null=True, blank=True)
     code_submitted = models.TextField(blank=True)   # последний код ученика
